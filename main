@@ -1,0 +1,99 @@
+import tkinter as tk
+from tkinter import filedialog
+import PyPDF2
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
+import faiss
+from langchain.chat_models import OllamaAI
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import create_retrieval_chain
+from extance import Extance
+
+def load_pdf(file_path):
+    pdf_text = ""
+    with open(file_path, "rb") as file:
+        reader = PyPDF2.PdfFileReader(file)
+        for page_num in range(reader.numPages):
+            page = reader.getPage(page_num)
+            pdf_text += page.extract_text()
+    return pdf_text
+
+def process_query(query):
+    # Load the PDF file
+    pdf_text = load_pdf("file:///D:/ollama/1st.pdf")
+
+    # Split the document
+    text_splitter = RecursiveCharacterTextSplitter()
+    split_documents = text_splitter.split_text(pdf_text)
+
+    # Create a SentenceTransformer model
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+
+    # Create embeddings for the split documents
+    embeddings = model.encode([doc for doc in split_documents])
+
+    # Create a FAISS vector store
+    d = embeddings.shape[1]
+    index = faiss.IndexFlatL2(d)
+    index.add(embeddings.cpu().numpy())
+
+    # Define retriever class
+    class FAISSRetriever:
+        def __init__(self, index, embeddings):
+            self.index = index
+            self.embeddings = embeddings
+
+        def retrieve(self, query, k=5):
+            query_embedding = model.encode([query])
+            D, I = self.index.search(query_embedding, k)
+            return [split_documents[i] for i in I[0]]
+
+    # Create an Extance instance
+    extance = Extance()
+
+    # Create a chat model
+    chat_model = OllamaAI()
+
+    # Create a combine chain
+    combine_chain = create_stuff_documents_chain()
+
+    # Create a retrieval chain
+    retriever = FAISSRetriever(index, embeddings)
+    retrieval_chain = create_retrieval_chain(
+        retriever=retriever,
+        combine_chain=combine_chain,
+        chat_model=chat_model,
+        prompt_template=ChatPromptTemplate(),
+        extance=extance
+    )
+
+    # Run the retrieval chain
+    response = retrieval_chain.run(query)
+    return response
+
+def handle_submit():
+    query = question_input.get()
+    response = process_query(query)
+    answer_label.config(text="Answer: " + response)
+
+root = tk.Tk()
+root.title("Ollama")
+
+file_uploader_label = tk.Label(root, text="Upload a PDF file")
+file_uploader_label.pack()
+file_uploader_button = tk.Button(root, text="Browse", command=lambda: filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")]))
+file_uploader_button.pack()
+
+question_input_label = tk.Label(root, text="Ask a question")
+question_input_label.pack()
+question_input = tk.Entry(root)
+question_input.pack()
+
+submit_button = tk.Button(root, text="Ask Ollama", command=handle_submit)
+submit_button.pack()
+
+answer_label = tk.Label(root, text="Answer: ")
+answer_label.pack()
+
+root.mainloop()
